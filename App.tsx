@@ -3,6 +3,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, Seat, ChatMessage, Gift, SeatStatus, FrameType, RoomInfo, AppScreen, InventoryItem, ShopItem, AnimationFormat } from './types';
 import { CURRENT_USER, INITIAL_SEATS, MOCK_GIFTS, SAMPLE_MESSAGES, CATEGORIES, MOCK_ROOMS, SHOP_ITEMS, SERVICE_AGENTS } from './constants';
 import { getSmartReply } from './services/geminiService';
+import { 
+  loginUser, registerUser, subscribeToRooms, createRoom, 
+  subscribeToRoomData, updateRoomSeats, subscribeToMessages, 
+  sendChatMessage, handleTransaction, subscribeToUser, updateUser 
+} from './services/firebase';
 
 // Add definition for SVGA global if not exists
 declare global {
@@ -217,43 +222,29 @@ const AuthPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
       if(!email || !password) {
           setError('يرجى إدخال البريد الإلكتروني وكلمة المرور');
           return;
       }
-      
-      // Simulating Backend with LocalStorage
-      const storedUsers = JSON.parse(localStorage.getItem('app_users') || '{}');
-      let currentIdCounter = parseInt(localStorage.getItem('app_next_id') || '10000');
-
-      if (storedUsers[email]) {
-          // User exists, check pass (simple simulation)
-          if(storedUsers[email].password === password) {
-              onLogin(storedUsers[email].data);
+      setIsLoading(true);
+      setError('');
+      try {
+          const user = await loginUser(email, password);
+          if (user) {
+              onLogin(user);
           } else {
-              setError('كلمة المرور غير صحيحة');
+              // Auto-register for demo purposes
+              const newUser = await registerUser(email, password);
+              onLogin(newUser);
           }
-      } else {
-          // Register New User (Auto-generate sequential ID)
-          const newUser: User = {
-              ...CURRENT_USER,
-              id: `u_${Date.now()}`,
-              displayId: currentIdCounter.toString(), // Assign Sequential ID
-              name: email.split('@')[0], // Use part of email as name initially
-              coins: 500, // Starter bonus
-              email: email
-          } as User;
-
-          // Save to simulated DB
-          storedUsers[email] = { password, data: newUser };
-          localStorage.setItem('app_users', JSON.stringify(storedUsers));
-          
-          // Increment and save ID counter
-          localStorage.setItem('app_next_id', (currentIdCounter + 1).toString());
-
-          onLogin(newUser);
+      } catch (err) {
+          setError('حدث خطأ في الاتصال');
+          console.error(err);
+      } finally {
+          setIsLoading(false);
       }
   };
 
@@ -279,8 +270,8 @@ const AuthPage = ({ onLogin }: { onLogin: (user: User) => void }) => {
           />
           {error && <div className="text-red-400 text-xs text-center">{error}</div>}
           
-          <button onClick={handleLogin} className="w-full px-8 py-4 bg-gradient-to-r from-purple-600 to-blue-600 text-white font-bold rounded-xl hover:scale-105 transition-transform shadow-lg">
-             تسجيل الدخول / إنشاء حساب
+          <button onClick={handleLogin} disabled={isLoading} className="w-full px-8 py-4 bg-gradient-to-r from-purple-600 to-blue-600 text-white font-bold rounded-xl hover:scale-105 transition-transform shadow-lg disabled:opacity-50">
+             {isLoading ? 'جاري التحميل...' : 'تسجيل الدخول / إنشاء حساب'}
           </button>
           
           <p className="text-xs text-gray-500 text-center">سيتم إنشاء حساب جديد تلقائياً وتعيين ID مميز لك إذا لم يكن لديك حساب.</p>
@@ -469,7 +460,6 @@ const HomePage = ({ onRoomJoin, user, rooms, onCreateRoom, bannerUrl }: any) => 
               </div>
             ))}
          </div>
-         {/* Removed Marquee and Service Agents here */}
       </div>
     </div>
   );
@@ -584,12 +574,7 @@ const RoomPage = ({ room, seats, messages, currentUser, onLeave, onToggleMic, on
           
           {/* Seats Grid - 10 Seats (5x2) */}
           <div className="w-full grid grid-cols-5 gap-y-6 gap-x-2 mt-4 max-w-sm">
-             {/* Row 1 - Host Seat is now treated as normal (isHost=false) */}
-             {seats.slice(0, 5).map((seat: any) => (
-                <SeatComponent key={seat.id} seat={seat} isHost={false} isMe={seat.user?.id === currentUser.id} onClick={() => onSeatClick(seat.id)} />
-             ))}
-             {/* Row 2 */}
-             {seats.slice(5, 10).map((seat: any) => (
+             {seats.map((seat: any) => (
                 <SeatComponent key={seat.id} seat={seat} isHost={false} isMe={seat.user?.id === currentUser.id} onClick={() => onSeatClick(seat.id)} />
              ))}
           </div>
@@ -918,9 +903,9 @@ const App = () => {
   const [screen, setScreen] = useState<AppScreen>('home'); 
   const [currentUser, setCurrentUser] = useState<User>(CURRENT_USER);
   const [activeRoom, setActiveRoom] = useState<RoomInfo | null>(null);
-  const [rooms, setRooms] = useState<RoomInfo[]>(MOCK_ROOMS);
+  const [rooms, setRooms] = useState<RoomInfo[]>([]);
   const [seats, setSeats] = useState<Seat[]>(INITIAL_SEATS);
-  const [messages, setMessages] = useState<ChatMessage[]>(SAMPLE_MESSAGES);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [gifts, setGifts] = useState<Gift[]>(MOCK_GIFTS);
   const [shopItems, setShopItems] = useState<ShopItem[]>(SHOP_ITEMS);
   const [showCreateRoom, setShowCreateRoom] = useState(false);
@@ -932,6 +917,60 @@ const App = () => {
   // App Settings State
   const [homeBanner, setHomeBanner] = useState('https://img.freepik.com/premium-photo/golden-lion-logo-design_985290-7634.jpg');
 
+  // Subscribe to Room List on Mount
+  useEffect(() => {
+    if (isAuthenticated) {
+      const unsubscribe = subscribeToRooms((updatedRooms) => {
+        setRooms(updatedRooms);
+      });
+      return () => unsubscribe();
+    }
+  }, [isAuthenticated]);
+
+  // Subscribe to Active Room Data (Seats, Messages)
+  useEffect(() => {
+    if (activeRoom && isAuthenticated) {
+      const unsubRoom = subscribeToRoomData(activeRoom.id, (data) => {
+        if (data && data.seats) {
+          setSeats(data.seats);
+        }
+      });
+
+      const unsubMsgs = subscribeToMessages(activeRoom.id, (msgs) => {
+        setMessages(msgs);
+        
+        // Check for new gift messages to animate
+        const lastMsg = msgs[msgs.length - 1];
+        if (lastMsg && lastMsg.isGift && lastMsg.timestamp > Date.now() - 2000) {
+            // Find gift details to animate
+            const gift = gifts.find(g => g.name === lastMsg.giftData?.giftName);
+            if (gift && (gift.fileUrl || gift.previewUrl)) {
+                setCurrentGiftAnim({
+                    url: gift.fileUrl || gift.previewUrl!,
+                    type: gift.animationType || (gift.isSvga ? 'svga' : 'webp'),
+                    soundUrl: gift.soundUrl
+                });
+            }
+        }
+      });
+
+      return () => {
+        unsubRoom();
+        unsubMsgs();
+      };
+    }
+  }, [activeRoom, isAuthenticated]);
+
+  // Subscribe to Current User Updates (Wallet, Inventory)
+  useEffect(() => {
+    if (isAuthenticated && currentUser.id) {
+        const unsubUser = subscribeToUser(currentUser.id, (userData) => {
+            setCurrentUser(userData);
+        });
+        return () => unsubUser();
+    }
+  }, [isAuthenticated, currentUser.id]);
+
   const handleLogin = (user: User) => {
       setCurrentUser(user);
       setIsAuthenticated(true);
@@ -942,18 +981,19 @@ const App = () => {
   }
 
   const handleCreateRoom = (name: string, cover: string) => {
-    const newRoom: RoomInfo = { id: Date.now().toString(), name, cover, hostName: currentUser.name, userCount: 1, tags: ['New'] };
-    setRooms([newRoom, ...rooms]);
-    setActiveRoom(newRoom); setScreen('room');
+    createRoom(name, cover, currentUser);
+    // Optimistic UI update or wait for subscription
   };
 
   const handleJoinRoom = (room: RoomInfo) => {
-    setActiveRoom(room); setScreen('room');
-    // FIX: Do NOT auto-seat the user in empty seats. Just load the initial seat state (which is empty except host).
-    setSeats([...INITIAL_SEATS]);
+    setActiveRoom(room);
+    setScreen('room');
+    // Seats will load via subscription
   };
 
-  const handleSeatClick = (seatId: number) => {
+  const handleSeatClick = async (seatId: number) => {
+     if (!activeRoom) return;
+
      const targetSeat = seats.find(s => s.id === seatId);
      const mySeat = seats.find(s => s.user?.id === currentUser.id);
 
@@ -963,53 +1003,101 @@ const App = () => {
      // If occupied by someone else, do nothing (or show profile in future)
      if (targetSeat?.status === SeatStatus.Occupied && targetSeat?.user?.id !== currentUser.id) return;
 
+     const newSeats = [...seats];
+
      // If clicking an empty seat -> Move/Sit
      if (targetSeat?.status === SeatStatus.Empty) {
-         const newSeats = [...seats];
          // Remove from old seat if exists
          if (mySeat) {
              newSeats[mySeat.id] = { ...mySeat, status: SeatStatus.Empty, user: undefined, isMuted: false, isTalking: false };
          }
          // Occupy new seat
          newSeats[seatId] = { ...targetSeat, status: SeatStatus.Occupied, user: currentUser, isMuted: false, isTalking: false };
-         setSeats(newSeats);
+         
+         await updateRoomSeats(activeRoom.id, newSeats);
      }
      // If clicking my OWN seat -> Leave seat
      else if (targetSeat?.user?.id === currentUser.id) {
-         const newSeats = [...seats];
          newSeats[seatId] = { ...targetSeat, status: SeatStatus.Empty, user: undefined, isMuted: false, isTalking: false };
-         setSeats(newSeats);
+         await updateRoomSeats(activeRoom.id, newSeats);
      }
   };
 
   const handleSendMessage = async (text: string) => {
-    setMessages(p => [...p, { id: Date.now().toString(), userId: currentUser.id, userName: currentUser.name, userAvatar: currentUser.avatar, content: text, timestamp: Date.now(), vipLevel: currentUser.vipLevel, userFrame: currentUser.frame }]);
+    if (!activeRoom) return;
+    await sendChatMessage(activeRoom.id, {
+        userId: currentUser.id,
+        userName: currentUser.name,
+        userAvatar: currentUser.avatar,
+        content: text,
+        vipLevel: currentUser.vipLevel,
+        userFrame: currentUser.frame
+    });
   };
 
-  const handleSendGift = (gift: Gift, count: number) => {
-     if (currentUser.coins < gift.price * count) return alert('No coins');
-     setCurrentUser({ ...currentUser, coins: currentUser.coins - (gift.price * count) });
-     setMessages(p => [...p, { id: Date.now().toString(), userId: currentUser.id, userName: currentUser.name, content: '', isGift: true, giftData: { giftName: gift.name, count, icon: gift.icon }, timestamp: Date.now() }]);
+  const handleSendGift = async (gift: Gift, count: number) => {
+     if (!activeRoom) return;
+     if (currentUser.coins < gift.price * count) return alert('لا يوجد رصيد كافي');
+     
+     // Deduct coins via transaction
+     await handleTransaction(currentUser.id, gift.price * count);
+
+     // Send Gift Message
+     await sendChatMessage(activeRoom.id, {
+         userId: currentUser.id,
+         userName: currentUser.name,
+         userAvatar: currentUser.avatar,
+         content: '',
+         isGift: true,
+         giftData: { giftName: gift.name, count, icon: gift.icon },
+         vipLevel: currentUser.vipLevel,
+         userFrame: currentUser.frame
+     });
+
      setShowGiftModal(false);
-     if (gift.animationType && (gift.fileUrl || gift.previewUrl)) setCurrentGiftAnim({ url: gift.fileUrl || gift.previewUrl!, type: gift.animationType, soundUrl: gift.soundUrl });
   };
 
-  const handleBuyItem = (item: ShopItem) => {
+  const handleBuyItem = async (item: ShopItem) => {
       if (currentUser.coins < item.price) return alert('No coins');
-      setCurrentUser({ ...currentUser, coins: currentUser.coins - item.price, inventory: [...currentUser.inventory, { id: Date.now().toString(), itemId: item.itemId, name: item.name, icon: item.icon, type: item.type, count: 1, isEquipped: false, frameUrl: item.fileUrl, isSvga: item.isSvga }]});
+      
+      const updatedInventory = [...currentUser.inventory, { 
+          id: Date.now().toString(), 
+          itemId: item.itemId, 
+          name: item.name, 
+          icon: item.icon, 
+          type: item.type, 
+          count: 1, 
+          isEquipped: false, 
+          frameUrl: item.fileUrl, 
+          isSvga: item.isSvga 
+      }];
+
+      await updateUser(currentUser.id, {
+          coins: currentUser.coins - item.price,
+          inventory: updatedInventory
+      });
       alert('تم الشراء');
   };
 
-  const handleEquipItem = (item: InventoryItem) => {
+  const handleEquipItem = async (item: InventoryItem) => {
       const newInv = currentUser.inventory.map(i => i.type === item.type ? { ...i, isEquipped: false } : i);
       const target = newInv.find(i => i.id === item.id);
       if (target) target.isEquipped = true;
+      
       let newFrame = currentUser.frame;
       if (item.type === 'frame') {
           newFrame = undefined;
           if (item.itemId.includes('neon')) newFrame = 'neon';
           if (item.itemId.includes('gold')) newFrame = 'gold';
       }
+
+      await updateUser(currentUser.id, {
+          inventory: newInv,
+          frame: newFrame,
+          frameUrl: item.frameUrl,
+          frameIsSvga: item.isSvga
+      });
+      // Optimistic update
       setCurrentUser({ ...currentUser, inventory: newInv, frame: newFrame, frameUrl: item.frameUrl, frameIsSvga: item.isSvga });
   };
 
@@ -1048,7 +1136,7 @@ const App = () => {
         <CreateRoomModal isOpen={showCreateRoom} onClose={() => setShowCreateRoom(false)} onCreate={handleCreateRoom} />
         <GiftModal isOpen={showGiftModal} onClose={() => setShowGiftModal(false)} gifts={gifts} onSend={handleSendGift} userCoins={currentUser.coins} />
         <InventoryModal isOpen={showInventory} onClose={() => setShowInventory(false)} user={currentUser} onEquip={handleEquipItem} />
-        <AdminPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} rooms={rooms} users={[currentUser]} gifts={gifts} shopItems={shopItems} onCloseRoom={(id: string) => setRooms(rooms.filter(r => r.id !== id))} onBanUser={() => alert('User Banned')} onAddGift={(g: Gift) => setGifts([...gifts, g])} onDeleteGift={(id: string) => setGifts(gifts.filter(g => g.id !== id))} onRechargeUser={(id: string, amount: number) => setCurrentUser({...currentUser, coins: currentUser.coins + amount})} onAddShopItem={(item: ShopItem) => setShopItems([...shopItems, item])} onDeleteShopItem={(id: string) => setShopItems(shopItems.filter(i => i.id !== id))} onUpdateShopItem={(item: ShopItem) => setShopItems(shopItems.map(i => i.id === item.id ? item : i))} onUpdateUserVip={(id: string, vip: number) => setCurrentUser({...currentUser, vipLevel: vip})} onUpdateBanner={setHomeBanner} currentBanner={homeBanner} />
+        <AdminPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} rooms={rooms} users={[currentUser]} gifts={gifts} shopItems={shopItems} onCloseRoom={(id: string) => setRooms(rooms.filter(r => r.id !== id))} onBanUser={() => alert('User Banned')} onAddGift={(g: Gift) => setGifts([...gifts, g])} onDeleteGift={(id: string) => setGifts(gifts.filter(g => g.id !== id))} onRechargeUser={(id: string, amount: number) => updateUser(currentUser.id, { coins: currentUser.coins + amount })} onAddShopItem={(item: ShopItem) => setShopItems([...shopItems, item])} onDeleteShopItem={(id: string) => setShopItems(shopItems.filter(i => i.id !== id))} onUpdateShopItem={(item: ShopItem) => setShopItems(shopItems.map(i => i.id === item.id ? item : i))} onUpdateUserVip={(id: string, vip: number) => updateUser(currentUser.id, { vipLevel: vip })} onUpdateBanner={setHomeBanner} currentBanner={homeBanner} />
     </div>
   );
 };

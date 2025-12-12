@@ -1,5 +1,4 @@
-
-import { Gift, Seat, SeatStatus, User, RoomInfo, ChatMessage } from './types';
+import { Gift, Seat, SeatStatus, User, RoomInfo, ChatMessage, ShopItem } from './types';
 
 export const CURRENT_USER: User = {
   id: 'me',
@@ -37,7 +36,7 @@ export const CURRENT_USER: User = {
   ]
 };
 
-export const SHOP_ITEMS = [
+export const SHOP_ITEMS: ShopItem[] = [
   // Frames
   { id: 'shop_f1', itemId: 'frame_fire', name: 'إطار النار', type: 'frame', price: 2000, currency: 'coins', icon: '🔥', description: 'لمن يملكون الشغف' },
   { id: 'shop_f2', itemId: 'frame_wings', name: 'أجنحة الملاك', type: 'frame', price: 5000, currency: 'coins', icon: '🪽', description: 'حلق عالياً في الغرف' },
