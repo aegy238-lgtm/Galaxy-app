@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Copy of VoiceGalaxy - جالاكسي الصوت٨٨٨٨٨٨٨٨٨٨",
+  "description": "Premium galaxy-themed voice chat platform featuring VIP levels, animated frames, and interactive audio rooms.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
