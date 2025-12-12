@@ -6,7 +6,9 @@ import { getSmartReply } from './services/geminiService';
 import { 
   loginUser, registerUser, subscribeToRooms, createRoom, 
   subscribeToRoomData, updateRoomSeats, subscribeToMessages, 
-  sendChatMessage, handleTransaction, subscribeToUser, updateUser 
+  sendChatMessage, handleTransaction, subscribeToUser, updateUser,
+  subscribeToGifts, subscribeToShopItems, addGiftToDb, deleteGiftFromDb,
+  addShopItemToDb, deleteShopItemFromDb, findUserByDisplayId, db
 } from './services/firebase';
 
 // Add definition for SVGA global if not exists
@@ -645,20 +647,52 @@ const AdminPanel = ({ isOpen, onClose, rooms, users, gifts, shopItems, onCloseRo
 
    if (!isOpen) return null;
 
-   const handleAddGift = () => {
+   const handleAddGift = async () => {
       const fileUrl = animationFile ? URL.createObjectURL(animationFile) : undefined;
       const iconUrl = iconFile ? URL.createObjectURL(iconFile) : '🎁';
       const soundUrl = soundFile ? URL.createObjectURL(soundFile) : undefined;
-      onAddGift({ id: Date.now().toString(), name: newGiftName || 'هدية', price: newGiftPrice, currency: 'coins', icon: iconUrl, type: giftType, isSvga: animFormat === 'svga', animationType: (giftType === 'luxury' || giftType === 'svga') ? animFormat : undefined, fileUrl: fileUrl, previewUrl: iconUrl, soundUrl: soundUrl });
+      
+      const newGift = { 
+          id: Date.now().toString(), 
+          name: newGiftName || 'هدية', 
+          price: newGiftPrice, 
+          currency: 'coins' as const, 
+          icon: iconUrl, 
+          type: giftType, 
+          isSvga: animFormat === 'svga', 
+          animationType: (giftType === 'luxury' || giftType === 'svga') ? animFormat : undefined, 
+          fileUrl: fileUrl, 
+          previewUrl: iconUrl, 
+          soundUrl: soundUrl 
+      };
+
+      await onAddGift(newGift);
       setNewGiftName(''); setAnimationFile(null); setIconFile(null); setSoundFile(null); alert('تمت إضافة الهدية بنجاح! 🎁');
    };
 
-   const handleSaveShopItem = () => {
+   const handleSaveShopItem = async () => {
        const iconUrl = shopItemIcon ? URL.createObjectURL(shopItemIcon) : '✨';
        const fileUrl = shopItemFile ? URL.createObjectURL(shopItemFile) : undefined;
-       const newItem = { id: Date.now().toString(), itemId: `${shopItemType}_${Date.now()}`, name: shopItemName, type: shopItemType, price: shopItemPrice, currency: 'coins', icon: iconUrl, fileUrl: fileUrl, isSvga: shopItemFile?.name.endsWith('.svga') };
-       onAddShopItem(newItem);
+       const newItem = { 
+           id: Date.now().toString(), 
+           itemId: `${shopItemType}_${Date.now()}`, 
+           name: shopItemName, 
+           type: shopItemType, 
+           price: shopItemPrice, 
+           currency: 'coins' as const, 
+           icon: iconUrl, 
+           fileUrl: fileUrl, 
+           isSvga: shopItemFile?.name.endsWith('.svga') 
+       };
+       
+       await onAddShopItem(newItem);
        setShopItemName(''); setShopItemFile(null); setShopItemIcon(null); alert('تمت إضافة الغرض للمتجر! 🛒');
+   };
+
+   const handleRecharge = async () => {
+       if (!targetUserId) return alert('يرجى إدخال ID المستخدم');
+       await onRechargeUser(targetUserId, rechargeAmount);
+       alert('تم تنفيذ العملية بنجاح ✅');
    };
 
    return (
@@ -766,8 +800,8 @@ const AdminPanel = ({ isOpen, onClose, rooms, users, gifts, shopItems, onCloseRo
                                   <input type="number" value={rechargeAmount} onChange={e => setRechargeAmount(parseInt(e.target.value))} placeholder="الكمية" className="bg-black/30 border border-white/10 rounded-xl p-3 text-white" />
                               </div>
                               <div className="flex gap-4">
-                                  <button onClick={() => onRechargeUser(targetUserId, rechargeAmount)} className="flex-1 bg-gradient-to-r from-green-600 to-green-500 py-3 rounded-xl font-bold text-white hover:scale-[1.02] transition-transform">شحن (إضافة) ➕</button>
-                                  <button onClick={() => onRechargeUser(targetUserId, -rechargeAmount)} className="flex-1 bg-gradient-to-r from-red-600 to-red-500 py-3 rounded-xl font-bold text-white hover:scale-[1.02] transition-transform">خصم (تنزيل) ➖</button>
+                                  <button onClick={() => handleRecharge()} className="flex-1 bg-gradient-to-r from-green-600 to-green-500 py-3 rounded-xl font-bold text-white hover:scale-[1.02] transition-transform">شحن (إضافة) ➕</button>
+                                  <button onClick={() => { setRechargeAmount(-rechargeAmount); handleRecharge(); }} className="flex-1 bg-gradient-to-r from-red-600 to-red-500 py-3 rounded-xl font-bold text-white hover:scale-[1.02] transition-transform">خصم (تنزيل) ➖</button>
                               </div>
                           </div>
 
@@ -906,8 +940,11 @@ const App = () => {
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
   const [seats, setSeats] = useState<Seat[]>(INITIAL_SEATS);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [gifts, setGifts] = useState<Gift[]>(MOCK_GIFTS);
-  const [shopItems, setShopItems] = useState<ShopItem[]>(SHOP_ITEMS);
+  
+  // Use Mocks initially, but will be overwritten by Firestore
+  const [gifts, setGifts] = useState<Gift[]>([]); 
+  const [shopItems, setShopItems] = useState<ShopItem[]>([]);
+  
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [showGiftModal, setShowGiftModal] = useState(false);
   const [showInventory, setShowInventory] = useState(false);
@@ -917,13 +954,25 @@ const App = () => {
   // App Settings State
   const [homeBanner, setHomeBanner] = useState('https://img.freepik.com/premium-photo/golden-lion-logo-design_985290-7634.jpg');
 
-  // Subscribe to Room List on Mount
+  // Subscribe to Room List, Gifts, and Shop Items on Mount
   useEffect(() => {
     if (isAuthenticated) {
-      const unsubscribe = subscribeToRooms((updatedRooms) => {
-        setRooms(updatedRooms);
+      const unsubRooms = subscribeToRooms((updatedRooms) => setRooms(updatedRooms));
+      const unsubGifts = subscribeToGifts((updatedGifts) => {
+         // Fallback to mocks if empty for demo purposes (optional)
+         if(updatedGifts.length === 0) setGifts(MOCK_GIFTS);
+         else setGifts(updatedGifts);
       });
-      return () => unsubscribe();
+      const unsubShop = subscribeToShopItems((updatedItems) => {
+          if(updatedItems.length === 0) setShopItems(SHOP_ITEMS);
+          else setShopItems(updatedItems);
+      });
+
+      return () => {
+          unsubRooms();
+          unsubGifts();
+          unsubShop();
+      };
     }
   }, [isAuthenticated]);
 
@@ -959,7 +1008,7 @@ const App = () => {
         unsubMsgs();
       };
     }
-  }, [activeRoom, isAuthenticated]);
+  }, [activeRoom, isAuthenticated, gifts]); // Added gifts dependency
 
   // Subscribe to Current User Updates (Wallet, Inventory)
   useEffect(() => {
@@ -982,13 +1031,11 @@ const App = () => {
 
   const handleCreateRoom = (name: string, cover: string) => {
     createRoom(name, cover, currentUser);
-    // Optimistic UI update or wait for subscription
   };
 
   const handleJoinRoom = (room: RoomInfo) => {
     setActiveRoom(room);
     setScreen('room');
-    // Seats will load via subscription
   };
 
   const handleSeatClick = async (seatId: number) => {
@@ -997,26 +1044,18 @@ const App = () => {
      const targetSeat = seats.find(s => s.id === seatId);
      const mySeat = seats.find(s => s.user?.id === currentUser.id);
 
-     // If locked, do nothing
      if (targetSeat?.status === SeatStatus.Locked) return;
-
-     // If occupied by someone else, do nothing (or show profile in future)
      if (targetSeat?.status === SeatStatus.Occupied && targetSeat?.user?.id !== currentUser.id) return;
 
      const newSeats = [...seats];
 
-     // If clicking an empty seat -> Move/Sit
      if (targetSeat?.status === SeatStatus.Empty) {
-         // Remove from old seat if exists
          if (mySeat) {
              newSeats[mySeat.id] = { ...mySeat, status: SeatStatus.Empty, user: undefined, isMuted: false, isTalking: false };
          }
-         // Occupy new seat
          newSeats[seatId] = { ...targetSeat, status: SeatStatus.Occupied, user: currentUser, isMuted: false, isTalking: false };
-         
          await updateRoomSeats(activeRoom.id, newSeats);
      }
-     // If clicking my OWN seat -> Leave seat
      else if (targetSeat?.user?.id === currentUser.id) {
          newSeats[seatId] = { ...targetSeat, status: SeatStatus.Empty, user: undefined, isMuted: false, isTalking: false };
          await updateRoomSeats(activeRoom.id, newSeats);
@@ -1039,10 +1078,8 @@ const App = () => {
      if (!activeRoom) return;
      if (currentUser.coins < gift.price * count) return alert('لا يوجد رصيد كافي');
      
-     // Deduct coins via transaction
      await handleTransaction(currentUser.id, gift.price * count);
 
-     // Send Gift Message
      await sendChatMessage(activeRoom.id, {
          userId: currentUser.id,
          userName: currentUser.name,
@@ -1068,8 +1105,8 @@ const App = () => {
           type: item.type, 
           count: 1, 
           isEquipped: false, 
-          frameUrl: item.fileUrl, 
-          isSvga: item.isSvga 
+          frameUrl: item.fileUrl || null, 
+          isSvga: item.isSvga || false 
       }];
 
       await updateUser(currentUser.id, {
@@ -1084,21 +1121,38 @@ const App = () => {
       const target = newInv.find(i => i.id === item.id);
       if (target) target.isEquipped = true;
       
-      let newFrame = currentUser.frame;
+      let newFrame: FrameType = currentUser.frame || 'none';
       if (item.type === 'frame') {
-          newFrame = undefined;
+          newFrame = 'none';
           if (item.itemId.includes('neon')) newFrame = 'neon';
-          if (item.itemId.includes('gold')) newFrame = 'gold';
+          else if (item.itemId.includes('gold')) newFrame = 'gold';
+          else if (item.itemId.includes('fire')) newFrame = 'fire';
+          else if (item.itemId.includes('wings')) newFrame = 'wings';
+          else if (item.itemId.includes('ice')) newFrame = 'ice';
       }
 
       await updateUser(currentUser.id, {
           inventory: newInv,
           frame: newFrame,
-          frameUrl: item.frameUrl,
-          frameIsSvga: item.isSvga
+          frameUrl: item.frameUrl || null, 
+          frameIsSvga: item.isSvga || false 
       });
-      // Optimistic update
       setCurrentUser({ ...currentUser, inventory: newInv, frame: newFrame, frameUrl: item.frameUrl, frameIsSvga: item.isSvga });
+  };
+
+  // --- Admin Handlers (Now Integrated with Firebase) ---
+  const handleRechargeUser = async (displayId: string, amount: number) => {
+      try {
+        const userId = await findUserByDisplayId(displayId);
+        if (userId) {
+            await handleTransaction(userId, -amount); // Negative amount adds coins because handleTransaction subtracts
+        } else {
+            alert('المستخدم غير موجود (تحقق من الـ ID)');
+        }
+      } catch (e) {
+          console.error(e);
+          alert('حدث خطأ أثناء الشحن');
+      }
   };
 
   return (
@@ -1136,7 +1190,27 @@ const App = () => {
         <CreateRoomModal isOpen={showCreateRoom} onClose={() => setShowCreateRoom(false)} onCreate={handleCreateRoom} />
         <GiftModal isOpen={showGiftModal} onClose={() => setShowGiftModal(false)} gifts={gifts} onSend={handleSendGift} userCoins={currentUser.coins} />
         <InventoryModal isOpen={showInventory} onClose={() => setShowInventory(false)} user={currentUser} onEquip={handleEquipItem} />
-        <AdminPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} rooms={rooms} users={[currentUser]} gifts={gifts} shopItems={shopItems} onCloseRoom={(id: string) => setRooms(rooms.filter(r => r.id !== id))} onBanUser={() => alert('User Banned')} onAddGift={(g: Gift) => setGifts([...gifts, g])} onDeleteGift={(id: string) => setGifts(gifts.filter(g => g.id !== id))} onRechargeUser={(id: string, amount: number) => updateUser(currentUser.id, { coins: currentUser.coins + amount })} onAddShopItem={(item: ShopItem) => setShopItems([...shopItems, item])} onDeleteShopItem={(id: string) => setShopItems(shopItems.filter(i => i.id !== id))} onUpdateShopItem={(item: ShopItem) => setShopItems(shopItems.map(i => i.id === item.id ? item : i))} onUpdateUserVip={(id: string, vip: number) => updateUser(currentUser.id, { vipLevel: vip })} onUpdateBanner={setHomeBanner} currentBanner={homeBanner} />
+        
+        {/* Updated Admin Panel passing async handlers */}
+        <AdminPanel 
+            isOpen={showAdmin} 
+            onClose={() => setShowAdmin(false)} 
+            rooms={rooms} 
+            users={[currentUser]} 
+            gifts={gifts} 
+            shopItems={shopItems} 
+            onCloseRoom={(id: string) => setRooms(rooms.filter(r => r.id !== id))} 
+            onBanUser={() => alert('User Banned')} 
+            onAddGift={addGiftToDb} 
+            onDeleteGift={deleteGiftFromDb} 
+            onRechargeUser={handleRechargeUser} 
+            onAddShopItem={addShopItemToDb} 
+            onDeleteShopItem={deleteShopItemFromDb} 
+            onUpdateShopItem={(item: ShopItem) => setShopItems(shopItems.map(i => i.id === item.id ? item : i))} 
+            onUpdateUserVip={(id: string, vip: number) => updateUser(currentUser.id, { vipLevel: vip })} 
+            onUpdateBanner={setHomeBanner} 
+            currentBanner={homeBanner} 
+        />
     </div>
   );
 };

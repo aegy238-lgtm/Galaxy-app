@@ -1,9 +1,9 @@
 import { initializeApp } from "firebase/app";
 import { 
   getFirestore, collection, doc, setDoc, addDoc, getDocs, 
-  query, where, onSnapshot, updateDoc, orderBy, limit, increment 
+  query, where, onSnapshot, updateDoc, orderBy, limit, increment, deleteDoc 
 } from "firebase/firestore";
-import { User, RoomInfo, ChatMessage, Seat, SeatStatus } from "../types";
+import { User, RoomInfo, ChatMessage, Seat, SeatStatus, Gift, ShopItem } from "../types";
 import { INITIAL_SEATS, CURRENT_USER } from "../constants";
 
 const firebaseConfig = {
@@ -71,6 +71,17 @@ export const updateUser = async (userId: string, data: Partial<User>) => {
   await updateDoc(userRef, data);
 };
 
+// --- Admin Helper Functions ---
+
+export const findUserByDisplayId = async (displayId: string): Promise<string | null> => {
+  const q = query(collection(db, "users"), where("displayId", "==", displayId));
+  const querySnapshot = await getDocs(q);
+  if (!querySnapshot.empty) {
+    return querySnapshot.docs[0].id; // Return the Document ID (not the displayId)
+  }
+  return null;
+};
+
 // --- Room Functions ---
 
 export const subscribeToRooms = (callback: (rooms: RoomInfo[]) => void) => {
@@ -132,4 +143,39 @@ export const handleTransaction = async (senderId: string, amount: number) => {
   await updateDoc(userRef, {
     coins: increment(-amount)
   });
+};
+
+// --- Global Data (Gifts & Shop) ---
+
+export const subscribeToGifts = (callback: (gifts: Gift[]) => void) => {
+    return onSnapshot(collection(db, "gifts"), (snapshot) => {
+        const gifts = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Gift));
+        callback(gifts);
+    });
+};
+
+export const addGiftToDb = async (gift: Gift) => {
+    // Remove ID if present to let Firestore generate it, or use it as doc ID
+    const { id, ...data } = gift;
+    await addDoc(collection(db, "gifts"), data);
+};
+
+export const deleteGiftFromDb = async (giftId: string) => {
+    await deleteDoc(doc(db, "gifts", giftId));
+};
+
+export const subscribeToShopItems = (callback: (items: ShopItem[]) => void) => {
+    return onSnapshot(collection(db, "shopItems"), (snapshot) => {
+        const items = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ShopItem));
+        callback(items);
+    });
+};
+
+export const addShopItemToDb = async (item: ShopItem) => {
+    const { id, ...data } = item;
+    await addDoc(collection(db, "shopItems"), data);
+};
+
+export const deleteShopItemFromDb = async (itemId: string) => {
+    await deleteDoc(doc(db, "shopItems", itemId));
 };
